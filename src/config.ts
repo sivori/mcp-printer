@@ -33,6 +33,8 @@ export interface Config {
   maxCopies: number
   /** Threshold for page count confirmation. If physical sheets exceed this, print job returns preview instead. 0 = disabled. */
   confirmIfOverPages: number
+  /** Maximum file size (bytes) eligible for markdown/code rendering. Larger files error (or fall back to printing as-is). 0 = unlimited. */
+  maxRenderBytes: number
   /** Code rendering configuration */
   code: {
     /** File extensions to exclude from code rendering. All enabled by default. */
@@ -73,6 +75,7 @@ const DEFAULT_ENABLE_PROMPTS = true
 const DEFAULT_FALLBACK_ON_RENDER_ERROR = false
 const DEFAULT_MAX_COPIES = 10
 const DEFAULT_CONFIRM_IF_OVER_PAGES = 10
+const DEFAULT_MAX_RENDER_BYTES = 10_000_000 // 10 MB
 const DEFAULT_CODE_COLOR_SCHEME = "atom-one-light"
 const DEFAULT_CODE_AUTO_LINE_NUMBERS = true
 const DEFAULT_CODE_FONT_SIZE = "10pt"
@@ -172,6 +175,11 @@ export const config: Config = {
     process.env.MCP_PRINTER_CONFIRM_IF_OVER_PAGES,
     DEFAULT_CONFIRM_IF_OVER_PAGES,
     "MCP_PRINTER_CONFIRM_IF_OVER_PAGES"
+  ),
+  maxRenderBytes: parseIntConfig(
+    process.env.MCP_PRINTER_MAX_RENDER_BYTES,
+    DEFAULT_MAX_RENDER_BYTES,
+    "MCP_PRINTER_MAX_RENDER_BYTES"
   ),
   code: {
     excludeExtensions: parseDelimitedString(

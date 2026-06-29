@@ -45,6 +45,9 @@ export function registerPrinterTools(server: McpServer) {
         MCP_PRINTER_ENABLE_PROMPTS: config.enablePrompts ? "true" : "false",
         MCP_PRINTER_CONFIRM_IF_OVER_PAGES:
           config.confirmIfOverPages > 0 ? String(config.confirmIfOverPages) : "0 (disabled)",
+        MCP_PRINTER_MAX_COPIES: config.maxCopies > 0 ? String(config.maxCopies) : "0 (unlimited)",
+        MCP_PRINTER_MAX_RENDER_BYTES:
+          config.maxRenderBytes > 0 ? String(config.maxRenderBytes) : "0 (unlimited)",
         MCP_PRINTER_ALLOWED_PATHS: config.allowedPaths.join(":"),
         MCP_PRINTER_DENIED_PATHS: config.deniedPaths.join(":"),
         MCP_PRINTER_CODE_EXCLUDE_EXTENSIONS:

@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync, mkdtempSync, unlinkSync } from "fs"
 import { tmpdir } from "os"
 import matter from "gray-matter"
 import he from "he"
-import { findChrome, cleanupTempDir } from "../utils.js"
+import { findChrome, cleanupTempDir, assertRenderableSize } from "../utils.js"
 import { validateFilePath } from "../file-security.js"
 import { config } from "../config.js"
 import { Notebook } from "crossnote"
@@ -95,8 +95,9 @@ function injectPageNumbering(content: string, filename: string): string {
  * @throws {Error} If Chrome is not found or rendering fails
  */
 export async function renderMarkdownToPdf(filePath: string): Promise<string> {
-  // Validate file path security
+  // Validate file path security and size
   validateFilePath(filePath)
+  assertRenderableSize(filePath)
 
   // Read the original markdown content
   const originalContent = readFileSync(filePath, "utf-8")

@@ -6,7 +6,7 @@
 import { execa, type ExecaError } from "execa"
 import { access, readFile } from "fs/promises"
 import { constants } from "fs"
-import { writeFileSync, mkdtempSync, unlinkSync, rmSync } from "fs"
+import { writeFileSync, mkdtempSync, unlinkSync, rmSync, statSync } from "fs"
 import { extname, join, dirname, basename } from "path"
 import { tmpdir } from "os"
 import { config, MARKDOWN_EXTENSIONS, type MarkdownExtension } from "./config.js"
@@ -263,6 +263,32 @@ export function shouldRenderToPdf(filePath: string): boolean {
 }
 
 /**
+ * Throws if a file exceeds the configured render-size cap.
+ *
+ * Rendering reads the whole file into memory and builds an HTML document for
+ * Chrome, so an unbounded input can produce an enormous document and a slow or
+ * memory-heavy render. `MCP_PRINTER_MAX_RENDER_BYTES=0` disables the cap. When
+ * fallback-on-render-error is enabled, callers treat this error as "print the
+ * original file as-is" rather than rendering.
+ *
+ * @param filePath - Path to the file about to be rendered
+ * @throws {Error} If the file is larger than the configured cap
+ */
+export function assertRenderableSize(filePath: string): void {
+  if (config.maxRenderBytes <= 0) {
+    return
+  }
+  const { size } = statSync(filePath)
+  if (size > config.maxRenderBytes) {
+    throw new Error(
+      `File is too large to render (${size} bytes exceeds ` +
+        `MCP_PRINTER_MAX_RENDER_BYTES=${config.maxRenderBytes}). ` +
+        `Raise the limit (or set it to 0 for no limit) to render larger files.`
+    )
+  }
+}
+
+/**
  * Execute a print job with the given file and options.
  * Handles copy validation, lpr argument building, and execution.
  *
@@ -298,23 +324,9 @@ export async function executePrintJob(
     args.push(`-#${copies}`)
   }
 
-  // Build options with defaults
-  let allOptions = []
-
-  // Add default duplex if auto-enabled in config and not already specified
-  if (config.autoDuplex && !options?.includes("sides=")) {
-    allOptions.push("sides=two-sided-long-edge")
-  }
-
-  // Add default options if configured
-  if (config.defaultOptions.length > 0) {
-    allOptions.push(...config.defaultOptions)
-  }
-
-  // Add user-specified options (these override defaults, split by spaces)
-  if (options) {
-    allOptions.push(...options.split(/\s+/))
-  }
+  // Build the full CUPS option list (auto-duplex, configured defaults, then
+  // user options last so they win — CUPS uses last-wins for repeated -o keys).
+  const allOptions = buildPrintOptions(options)
 
   // Add each option with -o flag
   for (const option of allOptions) {
@@ -593,17 +605,54 @@ export async function prepareFileForPrinting(options: RenderOptions): Promise<Re
 }
 
 /**
- * Determines if duplex printing is enabled based on configuration and options.
+ * Builds the full ordered list of CUPS options for a print job, merging
+ * auto-duplex, configured defaults, and user-supplied options.
  *
- * @param options - CUPS options string (may contain sides= option)
- * @returns True if duplex printing is enabled
+ * Order matters: user options come last so they win, because CUPS applies the
+ * last value for any repeated `-o key=...`. Auto-duplex is only injected when
+ * the caller hasn't specified `sides=` themselves.
+ *
+ * @param options - User-supplied CUPS options string (space-separated)
+ * @returns Ordered array of `key=value` option strings
+ */
+export function buildPrintOptions(options?: string): string[] {
+  const allOptions: string[] = []
+
+  if (config.autoDuplex && !options?.includes("sides=")) {
+    allOptions.push("sides=two-sided-long-edge")
+  }
+
+  if (config.defaultOptions.length > 0) {
+    allOptions.push(...config.defaultOptions)
+  }
+
+  if (options) {
+    allOptions.push(...options.split(/\s+/))
+  }
+
+  return allOptions
+}
+
+/**
+ * Determines whether a print job will actually be duplex, using the same merged
+ * option list that {@link executePrintJob} sends to CUPS.
+ *
+ * Because CUPS uses last-wins for repeated `-o sides=...`, the effective state is
+ * the LAST `sides=` value among auto-duplex, default, and user options. This
+ * fixes sheet-count previews that previously overstated duplex when, e.g.,
+ * auto-duplex was on but the caller overrode it with `sides=one-sided`.
+ *
+ * @param options - User-supplied CUPS options string (may contain sides=)
+ * @returns True if the resolved job is two-sided
  */
 export function isDuplexEnabled(options?: string): boolean {
-  return (
-    config.autoDuplex ||
-    options?.includes("sides=two-sided") ||
-    config.defaultOptions.some((opt) => opt.includes("sides=two-sided"))
-  )
+  let duplex = false
+  for (const opt of buildPrintOptions(options)) {
+    if (opt.startsWith("sides=")) {
+      duplex = opt.startsWith("sides=two-sided")
+    }
+  }
+  return duplex
 }
 
 /**

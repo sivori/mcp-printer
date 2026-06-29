@@ -27,7 +27,7 @@ import { basename, dirname, extname, join, resolve, sep } from "path"
 import { createRequire } from "module"
 import hljs from "highlight.js"
 import he from "he"
-import { convertHtmlToPdf, hasShebang } from "../utils.js"
+import { convertHtmlToPdf, hasShebang, assertRenderableSize } from "../utils.js"
 import { validateFilePath } from "../file-security.js"
 import { config } from "../config.js"
 
@@ -441,8 +441,9 @@ export async function renderCodeToPdf(
   filePath: string,
   options?: RenderCodeOptions
 ): Promise<string> {
-  // Step 1: Validate file path
+  // Step 1: Validate file path and size
   validateFilePath(filePath)
+  assertRenderableSize(filePath)
 
   // Step 2: Read source code and identify language
   const sourceCode = readFileSync(filePath, "utf-8")
