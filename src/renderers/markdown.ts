@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync, mkdtempSync, unlinkSync } from "fs"
 import { tmpdir } from "os"
 import matter from "gray-matter"
 import he from "he"
-import { findChrome } from "../utils.js"
+import { findChrome, cleanupTempDir } from "../utils.js"
 import { validateFilePath } from "../file-security.js"
 import { config } from "../config.js"
 import { Notebook } from "crossnote"
@@ -155,12 +155,8 @@ export async function renderMarkdownToPdf(filePath: string): Promise<string> {
       runAllCodeChunks: false, // Don't execute code chunks for security
     })
   } catch (error: unknown) {
-    // Clean up temp file before throwing
-    try {
-      unlinkSync(tempFilePath)
-    } catch {
-      // Ignore cleanup errors
-    }
+    // Clean up the entire temp directory before throwing
+    cleanupTempDir(tempDir)
     throw new Error(
       `Failed to render markdown with crossnote: ${error instanceof Error ? error.message : String(error)}`
     )

@@ -6,8 +6,8 @@
 import { execa, type ExecaError } from "execa"
 import { access, readFile } from "fs/promises"
 import { constants } from "fs"
-import { writeFileSync, mkdtempSync, unlinkSync } from "fs"
-import { extname, join } from "path"
+import { writeFileSync, mkdtempSync, unlinkSync, rmSync } from "fs"
+import { extname, join, dirname, basename } from "path"
 import { tmpdir } from "os"
 import { config, MARKDOWN_EXTENSIONS, type MarkdownExtension } from "./config.js"
 import { PDFParse } from "pdf-parse"
@@ -240,13 +240,8 @@ export async function convertHtmlToPdf(
 
     return tmpPdf
   } catch (error) {
-    // Clean up temp files on error
-    try {
-      unlinkSync(tmpHtml)
-    } catch {}
-    try {
-      unlinkSync(tmpPdf)
-    } catch {}
+    // Clean up the entire temp directory on error (files inside included)
+    cleanupTempDir(tmpDir)
     throw error
   }
 }
@@ -612,16 +607,38 @@ export function isDuplexEnabled(options?: string): boolean {
 }
 
 /**
- * Cleans up a rendered PDF temp file if it exists.
+ * Removes a temporary directory created by one of the renderers.
+ *
+ * As a safety measure this only ever removes directories that live inside the OS
+ * temp directory AND carry our `mcp-printer-` mkdtemp prefix, so a stray path can
+ * never trigger a recursive delete of an unrelated directory.
+ *
+ * @param dir - Directory to remove
+ */
+export function cleanupTempDir(dir: string): void {
+  if (!dir.startsWith(tmpdir()) || !basename(dir).startsWith("mcp-printer-")) {
+    return
+  }
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // Ignore cleanup errors — the OS reclaims temp space eventually.
+  }
+}
+
+/**
+ * Cleans up a rendered PDF by removing the dedicated temp directory containing it.
+ *
+ * Both renderers write their PDF inside a `mkdtemp()` directory
+ * (`mcp-printer-code-*` / `mcp-printer-markdown-*`). Earlier versions only
+ * unlinked the PDF file and leaked an empty directory on every render, so we
+ * remove the whole containing directory here.
  *
  * @param renderedPdf - Path to rendered PDF temp file (or null)
  */
 export function cleanupRenderedPdf(renderedPdf: string | null): void {
-  if (renderedPdf) {
-    try {
-      unlinkSync(renderedPdf)
-    } catch {
-      // Ignore cleanup errors
-    }
+  if (!renderedPdf) {
+    return
   }
+  cleanupTempDir(dirname(renderedPdf))
 }
