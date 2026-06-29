@@ -23,8 +23,8 @@
  */
 
 import { readFileSync } from "fs"
-import { basename, dirname, extname, join } from "path"
-import { fileURLToPath } from "url"
+import { basename, dirname, extname, join, resolve, sep } from "path"
+import { createRequire } from "module"
 import hljs from "highlight.js"
 import he from "he"
 import { convertHtmlToPdf, hasShebang } from "../utils.js"
@@ -65,9 +65,11 @@ export async function shouldRenderCode(filePath: string): Promise<boolean> {
   return await hasShebang(filePath)
 }
 
-// Get the directory of the current module for resolving relative paths
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
+// Resolve dependency paths relative to this module. Using createRequire +
+// require.resolve locates highlight.js regardless of the on-disk install layout
+// (flat npm hoist, pnpm's symlinked store, monorepo, etc.) instead of assuming a
+// hardcoded "../../node_modules/highlight.js" path.
+const require = createRequire(import.meta.url)
 
 /**
  * Maps file extensions to highlight.js language names.
@@ -235,39 +237,73 @@ function applySyntaxHighlighting(sourceCode: string, language: string): string {
 }
 
 /**
- * Loads the CSS for a highlight.js color scheme.
- * Tries the specified theme, falls back to default, then to minimal inline CSS.
+ * Minimal fallback syntax-highlighting CSS, used only when no highlight.js theme
+ * file can be read from disk.
  */
-function loadColorSchemeCSS(colorScheme: string): string {
-  try {
-    const stylesDir = join(__dirname, "../../node_modules/highlight.js/styles")
-    const themeFileName = colorScheme + ".css"
-    const themePath = join(stylesDir, themeFileName)
+const MINIMAL_HLJS_CSS = `
+  .hljs { display: block; overflow-x: auto; padding: 0.5em; background: #f0f0f0; }
+  .hljs-keyword { color: #0000ff; font-weight: bold; }
+  .hljs-string { color: #008000; }
+  .hljs-comment { color: #808080; font-style: italic; }
+  .hljs-number { color: #ff0000; }
+  .hljs-function { color: #0000ff; }
+`
 
-    try {
-      return readFileSync(themePath, "utf-8")
-    } catch {
-      // Try .min.css version
-      const minThemePath = join(stylesDir, `${colorScheme}.min.css`)
-      return readFileSync(minThemePath, "utf-8")
-    }
+/**
+ * Returns true if `child` resolves to a path inside `parent` (or is `parent`).
+ * Used to keep a user-supplied theme name from escaping the styles directory.
+ */
+function isInside(child: string, parent: string): boolean {
+  const resolvedChild = resolve(child)
+  const resolvedParent = resolve(parent)
+  return resolvedChild === resolvedParent || resolvedChild.startsWith(resolvedParent + sep)
+}
+
+/**
+ * Loads the CSS for a highlight.js color scheme.
+ *
+ * The styles directory is located via `require.resolve("highlight.js/package.json")`
+ * so it works regardless of how `highlight.js` is laid out on disk. The requested
+ * `colorScheme` is user-supplied, so each candidate path is confined to the styles
+ * directory with {@link isInside} — a value like `"../../../etc/passwd"` cannot
+ * read files outside the themes folder (path traversal). Subdirectory themes such
+ * as `"base16/apathy"` remain supported. Falls back to the default theme, then to
+ * minimal inline CSS.
+ *
+ * @param colorScheme - Requested highlight.js theme name (e.g. "atom-one-light")
+ * @returns CSS text for the theme
+ * @internal Exported for testing purposes
+ */
+export function loadColorSchemeCSS(colorScheme: string): string {
+  let stylesDir: string
+  try {
+    stylesDir = join(dirname(require.resolve("highlight.js/package.json")), "styles")
   } catch {
-    // Fall back to default theme
+    // highlight.js could not be located on disk — use minimal inline CSS.
+    return MINIMAL_HLJS_CSS
+  }
+
+  const tryRead = (fileName: string): string | null => {
+    const candidate = join(stylesDir, fileName)
+    // Security: never read outside the styles directory, even if colorScheme
+    // contains "../" or an absolute path.
+    if (!isInside(candidate, stylesDir)) {
+      return null
+    }
     try {
-      const defaultPath = join(__dirname, "../../node_modules/highlight.js/styles/default.css")
-      return readFileSync(defaultPath, "utf-8")
+      return readFileSync(candidate, "utf-8")
     } catch {
-      // If all else fails, use minimal inline CSS
-      return `
-        .hljs { display: block; overflow-x: auto; padding: 0.5em; background: #f0f0f0; }
-        .hljs-keyword { color: #0000ff; font-weight: bold; }
-        .hljs-string { color: #008000; }
-        .hljs-comment { color: #808080; font-style: italic; }
-        .hljs-number { color: #ff0000; }
-        .hljs-function { color: #0000ff; }
-      `
+      return null
     }
   }
+
+  // Requested theme (.css, then .min.css), then the default theme, then inline.
+  return (
+    tryRead(`${colorScheme}.css`) ??
+    tryRead(`${colorScheme}.min.css`) ??
+    tryRead("default.css") ??
+    MINIMAL_HLJS_CSS
+  )
 }
 
 /**
