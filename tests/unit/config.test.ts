@@ -2,10 +2,10 @@
  * @fileoverview Unit tests for configuration parsing
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { homedir } from "os"
 import { join } from "path"
-import { config, MARKDOWN_EXTENSIONS } from "../../src/config.js"
+import { config, MARKDOWN_EXTENSIONS, parseIntConfig } from "../../src/config.js"
 
 describe("config", () => {
   it("should have markdown extensions defined", () => {
@@ -96,6 +96,38 @@ describe("config", () => {
     // Should NOT contain the home directory itself (only subdirectories)
     if (!process.env.MCP_PRINTER_ALLOWED_PATHS) {
       expect(config.allowedPaths).not.toContain(homeDir)
+    }
+  })
+})
+
+describe("parseIntConfig", () => {
+  it("returns the default when the value is undefined", () => {
+    expect(parseIntConfig(undefined, 10, "X")).toBe(10)
+  })
+
+  it("returns the default when the value is empty or whitespace", () => {
+    expect(parseIntConfig("", 10, "X")).toBe(10)
+    expect(parseIntConfig("   ", 10, "X")).toBe(10)
+  })
+
+  it("parses a valid integer", () => {
+    expect(parseIntConfig("25", 10, "X")).toBe(25)
+  })
+
+  it("preserves 0 and negative values (sentinels for unlimited/disabled)", () => {
+    expect(parseIntConfig("0", 10, "X")).toBe(0)
+    expect(parseIntConfig("-1", 10, "X")).toBe(-1)
+  })
+
+  it("falls back to the default and warns on a non-numeric value", () => {
+    // Without this guard, a typo like "ten" → NaN, and since every downstream
+    // limit check is `value > 0`, the limit would silently disable itself.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      expect(parseIntConfig("ten", 10, "MCP_PRINTER_MAX_COPIES")).toBe(10)
+      expect(spy).toHaveBeenCalledOnce()
+    } finally {
+      spy.mockRestore()
     }
   })
 })

@@ -163,10 +163,15 @@ export const config: Config = {
   // Use user-provided paths if set, otherwise use default allowed directories
   allowedPaths: hasUserPaths ? userAllowedPaths : [...defaultAllowedPaths],
   deniedPaths: [...defaultDeniedPaths, ...userDeniedPaths],
-  maxCopies: parseInt(process.env.MCP_PRINTER_MAX_COPIES || String(DEFAULT_MAX_COPIES), 10),
-  confirmIfOverPages: parseInt(
-    process.env.MCP_PRINTER_CONFIRM_IF_OVER_PAGES || String(DEFAULT_CONFIRM_IF_OVER_PAGES),
-    10
+  maxCopies: parseIntConfig(
+    process.env.MCP_PRINTER_MAX_COPIES,
+    DEFAULT_MAX_COPIES,
+    "MCP_PRINTER_MAX_COPIES"
+  ),
+  confirmIfOverPages: parseIntConfig(
+    process.env.MCP_PRINTER_CONFIRM_IF_OVER_PAGES,
+    DEFAULT_CONFIRM_IF_OVER_PAGES,
+    "MCP_PRINTER_CONFIRM_IF_OVER_PAGES"
   ),
   code: {
     excludeExtensions: parseDelimitedString(
@@ -181,6 +186,38 @@ export const config: Config = {
     fontSize: process.env.MCP_PRINTER_CODE_FONT_SIZE || DEFAULT_CODE_FONT_SIZE,
     lineSpacing: process.env.MCP_PRINTER_CODE_LINE_SPACING || DEFAULT_CODE_LINE_SPACING,
   },
+}
+
+/**
+ * Parses an integer environment variable, falling back to a default when the
+ * value is unset or non-numeric.
+ *
+ * Without this guard a typo (e.g. `MCP_PRINTER_MAX_COPIES=ten`) parses to `NaN`,
+ * and because the downstream guards are all `value > 0` (and `NaN > 0` is
+ * `false`), the copy and page-count limits would silently disable themselves.
+ * Here we warn on stderr and use the documented default instead.
+ *
+ * @param value - Raw environment variable value (may be undefined)
+ * @param defaultValue - Default to use when unset or invalid
+ * @param varName - Environment variable name, used in the warning message
+ * @returns Parsed integer, or the default value
+ */
+export function parseIntConfig(
+  value: string | undefined,
+  defaultValue: number,
+  varName: string
+): number {
+  if (value === undefined || value.trim() === "") {
+    return defaultValue
+  }
+  const parsed = parseInt(value, 10)
+  if (Number.isNaN(parsed)) {
+    console.error(
+      `Warning: invalid ${varName}="${value}" (not a number); using default ${defaultValue}.`
+    )
+    return defaultValue
+  }
+  return parsed
 }
 
 /**
