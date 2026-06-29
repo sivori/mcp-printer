@@ -443,6 +443,8 @@ AI: *automatically retries print with confirmation bypassed*
   Rendered: markdown → PDF
 ```
 
+💡 **Batch behavior:** When printing multiple files, confirmation is all-or-nothing. If _any_ file in the batch exceeds the page threshold, **nothing** is printed and a confirmation summary lists the oversized files. This avoids a retry (with `skip_confirmation`) reprinting files that already succeeded. Retry with `skip_confirmation: true` for the files you want to print.
+
 ## CUPS Options
 
 Any valid CUPS/lpr options can be passed via the `options` parameter. Common examples:

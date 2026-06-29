@@ -12,6 +12,7 @@ import {
   prepareFileForPrinting,
   isDuplexEnabled,
   cleanupRenderedPdf,
+  type RenderResult,
 } from "../utils.js"
 import { config } from "../config.js"
 
@@ -87,98 +88,187 @@ export interface PrintResult {
 }
 
 /**
- * Handle a file print operation within a batch.
- *
- * This function handles the complete print workflow for one file:
- * - Prepares the file for printing (renders markdown/code if needed)
- * - Checks page count against confirmation threshold
- * - Executes the print job
- * - Cleans up temporary files
- *
- * @param spec - File print specification including path, printer, and rendering options
- * @returns PrintResult object with success status and details
- * @throws Never throws - all errors are captured in the result object
- *
- * @remarks
- * - If page count exceeds threshold and skip_confirmation is false, returns error with PAGE_COUNT_CONFIRMATION_REQUIRED
- * - Temporary rendered PDFs are automatically cleaned up in finally block
- * - Page count check only applies to PDF files (including rendered markdown/code)
+ * A file that has been prepared (rendered if needed) and measured, ready either
+ * to print or to be reported as needing confirmation.
  */
-export async function handlePrint(spec: FilePrintSpec): Promise<PrintResult> {
-  const {
-    file_path,
-    printer,
-    copies = 1,
-    options,
-    skip_confirmation,
-    line_numbers,
-    color_scheme,
-    font_size,
-    line_spacing,
-    force_markdown_render,
-    force_code_render,
-  } = spec
+interface PreparedPrintJob {
+  spec: FilePrintSpec
+  renderResult: RenderResult
+  /** True if the file's page count exceeds the confirmation threshold */
+  needsConfirmation: boolean
+  pdfPages?: number
+  physicalSheets?: number
+  isDuplex?: boolean
+  /** Set if preparation (validation/rendering) failed */
+  prepareError?: string
+}
 
+/**
+ * Phase 1 of a batch print: render (if needed) and measure a single file WITHOUT
+ * printing. A rendered PDF, if produced, is kept for the print phase and must be
+ * cleaned up by the caller.
+ *
+ * @param spec - File print specification
+ * @returns Prepared job describing render result, page metadata, and gating
+ * @throws Never throws - preparation failures are captured in prepareError
+ */
+async function preparePrintJob(spec: FilePrintSpec): Promise<PreparedPrintJob> {
   try {
-    // Use shared rendering function
-    const { actualFilePath, renderedPdf, renderType } = await prepareFileForPrinting({
-      filePath: file_path,
-      lineNumbers: line_numbers,
-      colorScheme: color_scheme,
-      fontSize: font_size,
-      lineSpacing: line_spacing,
-      forceMarkdownRender: force_markdown_render,
-      forceCodeRender: force_code_render,
+    const renderResult = await prepareFileForPrinting({
+      filePath: spec.file_path,
+      lineNumbers: spec.line_numbers,
+      colorScheme: spec.color_scheme,
+      fontSize: spec.font_size,
+      lineSpacing: spec.line_spacing,
+      forceMarkdownRender: spec.force_markdown_render,
+      forceCodeRender: spec.force_code_render,
     })
 
-    try {
-      // Check if we need to trigger page count confirmation
-      // Try to parse as PDF - if it works, do the page count check. If it fails, it's not a PDF.
-      if (!skip_confirmation && config.confirmIfOverPages > 0) {
-        try {
-          const pdfPages = await getPdfPageCount(actualFilePath)
-          const isDuplex = isDuplexEnabled(options)
-          const physicalSheets = calculatePhysicalSheets(pdfPages, isDuplex)
+    let needsConfirmation = false
+    let pdfPages: number | undefined
+    let physicalSheets: number | undefined
+    let isDuplex: boolean | undefined
 
-          // If exceeds threshold, return error indicating confirmation needed
-          if (shouldTriggerConfirmation(physicalSheets)) {
-            return {
-              success: false,
-              file_path,
-              message: `Confirmation required: ${pdfPages} pages (${physicalSheets} sheets${formatDuplexInfo(isDuplex)})`,
-              error: ERROR_CODES.PAGE_COUNT_CONFIRMATION_REQUIRED,
-              renderType,
-            }
-          }
-        } catch {
-          // Not a PDF or failed to parse - just continue with normal print
-          // (This is expected for plain text files, images, etc.)
-        }
+    if (!spec.skip_confirmation && config.confirmIfOverPages > 0) {
+      try {
+        pdfPages = await getPdfPageCount(renderResult.actualFilePath)
+        isDuplex = isDuplexEnabled(spec.options)
+        physicalSheets = calculatePhysicalSheets(pdfPages, isDuplex)
+        needsConfirmation = shouldTriggerConfirmation(physicalSheets)
+      } catch {
+        // Not a PDF (plain text, image, etc.) — no page-count gating.
       }
+    }
 
-      // Execute print job
-      const { printerName } = await executePrintJob(actualFilePath, printer, copies, options)
+    return { spec, renderResult, needsConfirmation, pdfPages, physicalSheets, isDuplex }
+  } catch (error) {
+    return {
+      spec,
+      renderResult: { actualFilePath: spec.file_path, renderedPdf: null, renderType: "" },
+      needsConfirmation: false,
+      prepareError: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
 
-      const copiesInfo = copies > 1 ? ` × ${copies} copies` : ""
-      return {
-        success: true,
-        file_path,
-        message: `Printed to ${printerName}${copiesInfo}${formatRenderInfo(renderType)}`,
-        renderType,
-      }
-    } finally {
-      // Clean up rendered PDF if it was created
-      cleanupRenderedPdf(renderedPdf)
+/**
+ * Phase 2 of a batch print: send a prepared file to the printer and clean up its
+ * rendered PDF.
+ *
+ * @param job - A prepared job with no prepareError
+ * @returns PrintResult for the file
+ * @throws Never throws - all errors are captured in the result object
+ */
+async function executePreparedJob(job: PreparedPrintJob): Promise<PrintResult> {
+  const { spec, renderResult } = job
+  const copies = spec.copies ?? 1
+  try {
+    const { printerName } = await executePrintJob(
+      renderResult.actualFilePath,
+      spec.printer,
+      copies,
+      spec.options
+    )
+    const copiesInfo = copies > 1 ? ` × ${copies} copies` : ""
+    return {
+      success: true,
+      file_path: spec.file_path,
+      message: `Printed to ${printerName}${copiesInfo}${formatRenderInfo(renderResult.renderType)}`,
+      renderType: renderResult.renderType,
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return {
       success: false,
-      file_path,
+      file_path: spec.file_path,
       message: `Failed to print: ${message}`,
       error: message,
     }
+  } finally {
+    cleanupRenderedPdf(renderResult.renderedPdf)
   }
+}
+
+/**
+ * Handle a batch print request using a two-phase flow:
+ *
+ * 1. Prepare and measure every file (render if needed, count pages).
+ * 2. If ANY file exceeds the page-count confirmation threshold, print NOTHING
+ *    and return a confirmation summary. This is what prevents a confirmation
+ *    retry (with skip_confirmation) from double-printing files that would
+ *    otherwise have already printed in a per-file flow.
+ * 3. Otherwise print every prepared file. Preparation failures are reported as
+ *    individual failures, preserving partial-success behavior.
+ *
+ * @param files - Files to print
+ * @returns MCP response (confirmation summary or per-file print results)
+ * @throws Never throws - all errors are captured in the response
+ */
+export async function handlePrintBatch(
+  files: FilePrintSpec[]
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  // Phase 1: prepare + measure all files.
+  const prepared: PreparedPrintJob[] = []
+  for (const spec of files) {
+    prepared.push(await preparePrintJob(spec))
+  }
+
+  // Confirmation gate: hold the entire batch if anything needs confirmation, so
+  // a skip_confirmation retry can't double-print files that already succeeded.
+  const needConfirm = prepared.filter((job) => job.needsConfirmation)
+  if (needConfirm.length > 0) {
+    // Nothing prints on this call — clean up every rendered temp file.
+    for (const job of prepared) {
+      cleanupRenderedPdf(job.renderResult.renderedPdf)
+    }
+    return formatBatchConfirmation(needConfirm)
+  }
+
+  // Phase 2: print everything (preparation failures become per-file failures).
+  const results: PrintResult[] = []
+  for (const job of prepared) {
+    if (job.prepareError) {
+      results.push({
+        success: false,
+        file_path: job.spec.file_path,
+        message: `Failed to print: ${job.prepareError}`,
+        error: job.prepareError,
+      })
+    } else {
+      results.push(await executePreparedJob(job))
+    }
+  }
+
+  return formatPrintResults(results)
+}
+
+/**
+ * Format a batch confirmation response listing the files that exceed the page
+ * threshold. Nothing has been printed; the AI should re-issue the print with
+ * skip_confirmation: true for the files the user approves.
+ *
+ * @param jobs - Prepared jobs that need confirmation
+ * @returns MCP response object with the confirmation summary
+ */
+function formatBatchConfirmation(jobs: PreparedPrintJob[]): {
+  content: Array<{ type: "text"; text: string }>
+} {
+  const lines = jobs.map((job) => {
+    const sheets =
+      job.physicalSheets !== undefined
+        ? ` (${job.physicalSheets} sheets${formatDuplexInfo(job.isDuplex)})`
+        : ""
+    return `  • ${job.spec.file_path} — ${job.pdfPages} pages${sheets}${formatRenderInfo(job.renderResult.renderType)}`
+  })
+
+  const text =
+    `⚠️  Confirmation required — nothing was printed.\n\n` +
+    `${jobs.length} file(s) exceed the page threshold ` +
+    `(MCP_PRINTER_CONFIRM_IF_OVER_PAGES=${config.confirmIfOverPages}):\n` +
+    `${lines.join("\n")}\n\n` +
+    `Ask the user to confirm, then retry with skip_confirmation: true for the file(s) to print.`
+
+  return { content: [{ type: "text", text }] }
 }
 
 /**

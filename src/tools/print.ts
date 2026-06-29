@@ -6,12 +6,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import {
-  handlePrint,
-  formatPrintResults,
+  handlePrintBatch,
   handlePageMeta,
   formatPageMetaResults,
   checkBatchSizeLimit,
-  type PrintResult,
   type PageMetaResult,
 } from "./batch-helpers.js"
 
@@ -107,14 +105,9 @@ export function registerPrintTools(server: McpServer) {
         return batchSizeWarning
       }
 
-      // Process each file in the batch
-      const results: PrintResult[] = []
-      for (const fileSpec of files) {
-        const result = await handlePrint(fileSpec)
-        results.push(result)
-      }
-
-      return formatPrintResults(results)
+      // Two-phase batch: measure all files, then either confirm the whole batch
+      // or print everything (never a mix, to avoid double-printing on retry).
+      return handlePrintBatch(files)
     }
   )
 
