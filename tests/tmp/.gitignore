@@ -1,5 +1,0 @@
-# Ignore all files generated during test runs
-*
-
-# But keep the .gitignore itself
-!.gitignore
